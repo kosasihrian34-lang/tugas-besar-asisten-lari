@@ -458,5 +458,59 @@ hal_higdon_db = {
                 12: {"Senin": "8.1 km lari easy", "Selasa": "4x800 m jog 400 m", "Rabu": "4.8 km lari easy", "Kamis": "6.4 km easy", "Jumat": "Istirahat", "Sabtu": "Istirahat", "Minggu": "3.2 km lari easy"}
             }
         }
+    },
+    
+    "Base_Training": {
+        "Novice": {
+            "durasi_minggu": 12,
+            "jadwal": {
+                "1": {"Senin": "Istirahat", "Selasa": "2.4 km lari", "Rabu": "4.8 km lari", "Kamis": "2.4 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "4.8 km lari"},
+                "2": {"Senin": "Istirahat", "Selasa": "2.4 km lari", "Rabu": "4.8 km lari", "Kamis": "2.4 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "5.6 km lari"},
+                "3": {"Senin": "Istirahat", "Selasa": "2.4 km lari", "Rabu": "4.8 km lari", "Kamis": "2.4 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "4.8 km lari"},
+                "4": {"Senin": "Istirahat", "Selasa": "3.2 km lari", "Rabu": "4.8 km lari", "Kamis": "2.4 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "6.4 km lari"},
+                "5": {"Senin": "Istirahat", "Selasa": "3.2 km lari", "Rabu": "4.8 km lari", "Kamis": "3.2 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "4.8 km lari"},
+                "6": {"Senin": "Istirahat", "Selasa": "3.2 km lari", "Rabu": "4.8 km lari", "Kamis": "3.2 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "7.2 km lari"},
+                "7": {"Senin": "Istirahat", "Selasa": "3.2 km lari", "Rabu": "4.8 km lari", "Kamis": "3.2 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "4.8 km lari"},
+                "8": {"Senin": "Istirahat", "Selasa": "4 km lari", "Rabu": "4.8 km lari", "Kamis": "3.2 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "8.1 km lari"},
+                "9": {"Senin": "Istirahat", "Selasa": "4 km lari", "Rabu": "4.8 km lari", "Kamis": "4 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "4.8 km lari"},
+                "10": {"Senin": "Istirahat", "Selasa": "4 km lari", "Rabu": "4.8 km lari", "Kamis": "4 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "8.9 km lari"},
+                "11": {"Senin": "Istirahat", "Selasa": "4.8 km lari", "Rabu": "4.8 km lari", "Kamis": "4.8 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "4.8 km lari"},
+                "12": {"Senin": "Istirahat", "Selasa": "4.8 km lari", "Rabu": "4.8 km lari", "Kamis": "4.8 km lari", "Jumat": "Istirahat", "Sabtu": "Jalan 30 menit", "Minggu": "9.7 km lari"}
+            }
+        },
+        "Intermediate": {
+            "durasi_minggu": 12,
+            "jadwal": {
+                "1": {"Senin": "4.8 km lari + kekuatan", "Selasa": "4.8 km lari", "Rabu": "3x hill", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "30 menit tempo", "Minggu": "9.7 km lari"},
+                "2": {"Senin": "4.8 km lari + kekuatan", "Selasa": "4.8 km lari", "Rabu": "3x hill", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "30 menit fartlek", "Minggu": "11.3 km lari"},
+                "3": {"Senin": "4.8 km lari + kekuatan", "Selasa": "6.4 km lari", "Rabu": "4x hill", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "35 menit tempo", "Minggu": "9.7 km lari"},
+                "4": {"Senin": "4.8 km lari + kekuatan", "Selasa": "6.4 km lari", "Rabu": "4x hill", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "35 menit fartlek", "Minggu": "11.3 km lari"},
+                "5": {"Senin": "4.8 km lari + kekuatan", "Selasa": "8.1 km lari", "Rabu": "5x hill", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "35 menit tempo", "Minggu": "12.9 km lari"},
+                "6": {"Senin": "4.8 km lari + kekuatan", "Selasa": "8.1 km lari", "Rabu": "5x hill", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "Istirahat", "Minggu": "Lomba 5K"},
+                "7": {"Senin": "4.8 km lari + kekuatan", "Selasa": "6.4 km lari", "Rabu": "8x200 m", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "40 menit fartlek", "Minggu": "11.3 km lari"},
+                "8": {"Senin": "4.8 km lari + kekuatan", "Selasa": "8.1 km lari", "Rabu": "6x400 m", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "40 menit tempo", "Minggu": "12.9 km lari"},
+                "9": {"Senin": "4.8 km lari + kekuatan", "Selasa": "9.7 km lari", "Rabu": "10x200 m", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "Istirahat", "Minggu": "Lomba 8K"},
+                "10": {"Senin": "4.8 km lari + kekuatan", "Selasa": "6.4 km lari", "Rabu": "7x400 m", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "45 menit fartlek", "Minggu": "11.3 km lari"},
+                "11": {"Senin": "4.8 km lari + kekuatan", "Selasa": "8.1 km lari", "Rabu": "12x200 m", "Kamis": "4.8 km lari + kekuatan", "Jumat": "Istirahat", "Sabtu": "45 menit tempo", "Minggu": "12.9 km lari"},
+                "12": {"Senin": "4.8 km lari + kekuatan", "Selasa": "9.7 km lari", "Rabu": "8x400 m", "Kamis": "4.8 km lari", "Jumat": "Istirahat", "Sabtu": "Istirahat", "Minggu": "Lomba 10K"}
+            }
+        },
+        "Advanced": {
+            "durasi_minggu": 12,
+            "jadwal": {
+                "1": {"Senin": "4.8 km lari + kekuatan", "Selasa": "5x tanjakan", "Rabu": "4.8 km lari + peregangan", "Kamis": "40 menit tempo", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit fartlek", "Minggu": "9.7 km lari"},
+                "2": {"Senin": "4.8 km lari + kekuatan", "Selasa": "6x tanjakan", "Rabu": "6.4 km lari + peregangan", "Kamis": "40 menit fartlek", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit tempo", "Minggu": "11.3 km lari"},
+                "3": {"Senin": "4.8 km lari + kekuatan", "Selasa": "7x tanjakan", "Rabu": "8.1 km lari + peregangan", "Kamis": "45 menit tempo", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit fartlek", "Minggu": "12.9 km lari"},
+                "4": {"Senin": "4.8 km lari + kekuatan", "Selasa": "8x tanjakan", "Rabu": "9.7 km lari + peregangan", "Kamis": "45 menit fartlek", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit tempo", "Minggu": "14.5 km lari"},
+                "5": {"Senin": "4.8 km lari + kekuatan", "Selasa": "9x tanjakan", "Rabu": "4.8 km lari + peregangan", "Kamis": "30 menit tempo", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "4.8 km lari / istirahat", "Minggu": "Lomba 5K"},
+                "6": {"Senin": "4.8 km lari + kekuatan", "Selasa": "10x tanjakan", "Rabu": "4.8 km lari + peregangan", "Kamis": "45 menit fartlek", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit fartlek", "Minggu": "16.1 km lari"},
+                "7": {"Senin": "4.8 km lari + kekuatan", "Selasa": "16x 200 m", "Rabu": "4.8 km lari + peregangan", "Kamis": "30 menit tempo", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "4.8 km lari / istirahat", "Minggu": "Lomba 8K"},
+                "8": {"Senin": "4.8 km lari + kekuatan", "Selasa": "10x 400 m", "Rabu": "4.8 km lari + peregangan", "Kamis": "45 menit fartlek", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit tempo", "Minggu": "16.1 km lari"},
+                "9": {"Senin": "4.8 km lari + kekuatan", "Selasa": "16x 200 m", "Rabu": "4.8 km lari + peregangan", "Kamis": "30 menit tempo", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "4.8 km lari / istirahat", "Minggu": "Lomba 10K"},
+                "10": {"Senin": "4.8 km lari + kekuatan", "Selasa": "10x 400 m", "Rabu": "4.8 km lari + peregangan", "Kamis": "45 menit fartlek", "Jumat": "4.8 km lari + kekuatan", "Sabtu": "30 menit fartlek", "Minggu": "16.1 km lari"},
+                "11": {"Senin": "4.8 km lari + kekuatan", "Selasa": "16x 200 m", "Rabu": "4.8 km lari + peregangan", "Kamis": "30 menit tempo", "Jumat": "4.8 km lari / istirahat", "Sabtu": "Istirahat", "Minggu": "Lomba 5K"},
+                "12": {"Senin": "4.8 km lari + kekuatan", "Selasa": "10x 400 m", "Rabu": "4.8 km lari", "Kamis": "30 menit fartlek", "Jumat": "4.8 km lari / istirahat", "Sabtu": "Istirahat", "Minggu": "Lomba 10K"}
+            }
+        }
     }
 }
