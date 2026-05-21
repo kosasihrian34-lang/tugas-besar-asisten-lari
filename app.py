@@ -106,19 +106,6 @@ label, .stRadio label, .stCheckbox label {
     color: var(--text-1) !important;
 }
 
-.stCheckbox label {
-    background: var(--bg-card2) !important;
-    border: 1px solid var(--border) !important;
-    border-radius: 8px !important;
-    padding: 8px 14px !important;
-    color: var(--text-2) !important;
-    transition: all 0.2s !important;
-}
-.stCheckbox label:hover {
-    border-color: var(--accent) !important;
-    color: var(--text-1) !important;
-}
-
 div[data-testid="stMetric"] {
     background: linear-gradient(135deg, var(--bg-card), var(--bg-card2)) !important;
     border: 1px solid var(--border) !important;
@@ -308,32 +295,6 @@ DB_FILE = "database_user.json"
 jarak_ke_km = {"5K": 5.0, "10K": 10.0, "Half Marathon": 21.1, "Marathon": 42.2}
 NAMA_HARI_STANDAR = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
 
-# Bobot beban latihan per tipe sesi (untuk sorting Hard/Easy)
-# Semakin tinggi = semakin berat
-BOBOT_LATIHAN = {
-    "interval": 10, "x 400": 10, "x 800": 10, "x 200": 9, "x hill": 8,
-    "hill": 8, "tempo": 8, "fartlek": 7,
-    "pace": 6, "cepat": 6,
-    "long": 5,  # long run bukan "berat" tapi panjang — kita handle terpisah
-    "km": 3, "lari": 3, "jalan": 2,
-    "cross": 2, "cross training": 2, "sepeda": 2,
-    "istirahat": 0,
-}
-
-def bobot_sesi(teks: str) -> int:
-    """Hitung bobot sesi latihan berdasarkan kata kunci."""
-    t = teks.lower()
-    for kw, b in BOBOT_LATIHAN.items():
-        if kw in t:
-            return b
-    return 1
-
-def is_istirahat_murni(teks: str) -> bool:
-    t = teks.lower()
-    return "istirahat" in t and not any(
-        x in t for x in ["lari", "km", "cross", "pace", "tempo", "jalan", "interval", "hill"]
-    )
-
 def simpan_data(data):
     db = []
     if os.path.exists(DB_FILE):
@@ -369,213 +330,174 @@ def format_durasi(sisa_hari):
         return f"{minggu} minggu"
     return f"{minggu} minggu {sisa} hari ({sisa_hari} hari total)"
 
+
 # ─────────────────────────────────────────
-# SMART DAY MAPPING
+# CORE SCHEDULE LOGIC
+# Menggunakan jadwal Hal Higdon ASLI tanpa modifikasi hari
+# Race day selalu di kolom paling kanan
 # ─────────────────────────────────────────
-def petakan_jadwal_ke_hari_user(
-    menu_db: dict,
-    hari_user: list,
-    tanggal_race_day: datetime.date,
-    tgl_awal_minggu: datetime.date,
-    is_race_week: bool,
-    jarak: str,
-) -> dict:
+def generate_full_table(data, target_level, target_rp_sec):
     """
-    Memetakan jadwal DB (7 hari Hal Higdon) ke hari pilihan user.
-
-    Aturan utama:
-    1. Tabel selalu tampilkan SEMUA 7 hari (Senin-Minggu), tapi hari
-       yang TIDAK dipilih user otomatis = Istirahat.
-    2. Kolom paling kanan = hari race_day (hari lomba). Kolom ini
-       selalu berisi Long Run (atau Race Day di minggu terakhir).
-    3. Sesi latihan dari DB didistribusikan ke hari-hari yang dipilih
-       user (kecuali kolom race_day) dengan pola HARD-EASY alternating.
-    4. Hari berat tidak pernah berurutan (kecuali terpaksa, dan hanya
-       Easy+Easy yang boleh berurutan).
-    5. Jumlah sesi = jumlah hari yang dipilih user; kelebihan sesi DB
-       digabung (sesi ringan), kekurangan diisi Istirahat.
-
-    Returns:
-        dict {nama_hari: teks_sesi} untuk semua 7 hari.
+    Menghasilkan tabel jadwal dengan 7 kolom hari sesuai Hal Higdon.
+    Kolom dirotasi sehingga hari race_day selalu di PALING KANAN.
+    Jadwal DB Hal Higdon tetap utuh — hanya urutan kolom yang digeser.
     """
+    jarak         = data["jarak"]
+    sisa_waktu    = data["sisa_waktu"]
+    tanggal_lomba = datetime.datetime.strptime(data["tanggal_lomba"], "%Y-%m-%d").date()
+    tanggal_mulai = datetime.datetime.strptime(data["tanggal_mulai"], "%Y-%m-%d").date()
 
-    # Hari lomba (nama hari dalam seminggu, misal "Jumat")
-    nama_hari_race = NAMA_HARI_STANDAR[tanggal_race_day.weekday()]
+    # Hari race
+    race_weekday_idx = tanggal_lomba.weekday()  # 0=Senin ... 6=Minggu
+    nama_hari_race   = NAMA_HARI_STANDAR[race_weekday_idx]
 
-    # Pastikan hari race ada di pilihan user (jika tidak, tetap masuk sebagai race/long run)
-    hari_user_set = set(hari_user)
+    # Bangun header_ui: 7 kolom, pos 6 (kanan) = race_day
+    # Formula: header_ui[pos] = NAMA_HARI_STANDAR[(race_weekday_idx - 6 + pos) % 7]
+    # Contoh race=Selasa(1): [Rabu,Kamis,Jumat,Sabtu,Minggu,Senin,Selasa]
+    # Contoh race=Jumat(4):  [Sabtu,Minggu,Senin,Selasa,Rabu,Kamis,Jumat]
+    header_ui = [NAMA_HARI_STANDAR[(race_weekday_idx - 6 + pos) % 7] for pos in range(7)]
+    # Verifikasi: header_ui[6] == nama_hari_race selalu benar
 
-    # ── Ambil semua sesi dari DB ──
-    # Kita pisahkan slot Long Run (biasanya "Minggu" di DB Hal Higdon)
-    # dan slot-slot lain.
-    semua_slot_db = {}
-    for h in NAMA_HARI_STANDAR:
-        semua_slot_db[h] = menu_db.get(h, "Istirahat")
+    # Mapping DB hari -> UI kolom posisi:
+    # DB Senin(idx=0)->UI pos 0, ..., DB Minggu(idx=6)->UI pos 6
+    # Posisi SAMA persis — yang berubah hanya NAMA label di header.
+    # Sesi DB Minggu (long run) otomatis tampil di UI pos 6 = kolom race_day.
+    db_hari_to_ui_pos = {NAMA_HARI_STANDAR[i]: i for i in range(7)}
 
-    # Cari slot "Long Run" di DB — biasanya slot Minggu, atau slot terberat
-    # yang mengandung kata "Long", "jarak", atau nilai km terbesar.
-    def km_dari_teks(teks):
-        import re
-        nums = re.findall(r"(\d+(?:\.\d+)?)\s*km", teks.lower())
-        return max((float(n) for n in nums), default=0.0)
+    durasi_ideal  = hal_higdon_db[jarak][target_level]["durasi_minggu"]
+    jadwal_mentah = hal_higdon_db[jarak][target_level]["jadwal"]
+    jadwal_terpilih = {}
 
-    # Cari slot dengan km terbesar sebagai kandidat long run
-    slot_long_run = semua_slot_db.get("Minggu", "Istirahat")
-    km_max = km_dari_teks(slot_long_run)
-    for h, teks in semua_slot_db.items():
-        if h == "Minggu":
-            continue
-        km = km_dari_teks(teks)
-        if km > km_max:
-            km_max = km
-            slot_long_run = teks
+    base_level_str = "Novice"
+    if "Intermediate" in target_level:
+        base_level_str = "Intermediate"
+    elif "Advance" in target_level or "Advanced" in target_level:
+        base_level_str = "Advanced"
 
-    # Kumpulkan sesi latihan (non-istirahat, non-long-run dari slot Minggu)
-    sesi_latihan = []
-    for h in NAMA_HARI_STANDAR:
-        teks = semua_slot_db[h]
-        if h == "Minggu":
-            continue  # slot Minggu = long run, sudah dihandle
-        if is_istirahat_murni(teks):
-            continue
-        sesi_latihan.append(teks)
-
-    # ── Hasil akhir: mulai dengan semua hari = Istirahat ──
-    hasil = {h: "Istirahat" for h in NAMA_HARI_STANDAR}
-
-    # ── Kolom Race Day = Long Run atau RACE DAY ──
-    if is_race_week:
-        # Cari apakah DB punya slot "Lomba" / "Race"
-        slot_race = None
-        for h, teks in semua_slot_db.items():
-            if any(x in teks.lower() for x in ["lomba", "marathon", "maraton", "race", "half marathon"]):
-                slot_race = teks
-                break
-        hasil[nama_hari_race] = slot_race if slot_race else f"RACE DAY! {jarak}"
+    if sisa_waktu < durasi_ideal:
+        st.warning(
+            f"Sisa waktu **{sisa_waktu} minggu** (ideal {durasi_ideal} minggu). "
+            f"Jadwal dipotong cerdas dari fase inti."
+        )
+        minggu_mulai = durasi_ideal - sisa_waktu + 1
+        for i in range(minggu_mulai, durasi_ideal + 1):
+            key = str(i) if str(i) in jadwal_mentah else i
+            jadwal_terpilih[i] = jadwal_mentah[key]
+    elif sisa_waktu > durasi_ideal:
+        selisih = sisa_waktu - durasi_ideal
+        st.success(
+            f"Waktu persiapan panjang! Sistem menyisipkan **{selisih} minggu Base Training** "
+            f"sebelum program inti."
+        )
+        try:
+            jadwal_base = hal_higdon_db["Base_Training"][base_level_str]["jadwal"]
+        except KeyError:
+            jadwal_base = {"1": {
+                "Senin": "Istirahat", "Selasa": "Lari 4.8 km", "Rabu": "Cross training",
+                "Kamis": "Lari 4.8 km", "Jumat": "Istirahat", "Sabtu": "Lari 6.4 km",
+                "Minggu": "Lari 9.7 km"
+            }}
+        for i in range(1, selisih + 1):
+            key_base = str(((i - 1) % 12) + 1)
+            jadwal_terpilih[i] = jadwal_base.get(key_base, list(jadwal_base.values())[0])
+        for i in range(1, durasi_ideal + 1):
+            key_inti = str(i) if str(i) in jadwal_mentah else i
+            jadwal_terpilih[selisih + i] = jadwal_mentah[key_inti]
     else:
-        hasil[nama_hari_race] = slot_long_run
+        for i in range(1, durasi_ideal + 1):
+            key = str(i) if str(i) in jadwal_mentah else i
+            jadwal_terpilih[i] = jadwal_mentah[key]
 
-    # ── Hari latihan user (kecuali race_day) ──
-    hari_latihan_tersedia = [
-        h for h in hari_user
-        if h != nama_hari_race
-    ]
+    list_minggu     = sorted(jadwal_terpilih.keys())
+    minggu_terakhir = list_minggu[-1] if list_minggu else 0
+    tabel_ui, tabel_pdf = [], []
 
-    if not hari_latihan_tersedia:
-        return hasil  # hanya race day yang dipilih
+    for m, menu_db in jadwal_terpilih.items():
+        is_race_week = (m == minggu_terakhir)
+        is_taper     = (m == minggu_terakhir) or (
+            jarak == "Marathon" and m >= minggu_terakhir - 2
+        )
 
-    n_slot = len(hari_latihan_tersedia)
+        # Hitung tanggal: minggu race = minggu_terakhir
+        # Tanggal race di minggu ini:
+        tgl_race_minggu = tanggal_lomba - datetime.timedelta(days=(minggu_terakhir - m) * 7)
 
-    # ── Distribusi sesi ke slot yang tersedia ──
-    if len(sesi_latihan) == 0:
-        # Tidak ada sesi latihan di DB (jarang), isi dengan lari ringan
-        for h in hari_latihan_tersedia:
-            hasil[h] = "Lari ringan 3.2 km"
-        return hasil
+        # Awal minggu UI = tgl_race_minggu - 6 hari (karena race di kolom paling kanan = hari ke-7)
+        tgl_awal_ui = tgl_race_minggu - datetime.timedelta(days=6)
 
-    if len(sesi_latihan) > n_slot:
-        # Lebih banyak sesi dari slot: gabungkan sesi-sesi ringan
-        # Pisahkan sesi berat (bobot >= 7) dan ringan (bobot < 7)
-        sesi_berat = [s for s in sesi_latihan if bobot_sesi(s) >= 7]
-        sesi_ringan = [s for s in sesi_latihan if bobot_sesi(s) < 7]
+        label_ui  = f"M-{m}\n{tgl_awal_ui.strftime('%d %b')} –\n{tgl_race_minggu.strftime('%d %b')}"
+        label_pdf = f"M-{m} | {tgl_awal_ui.strftime('%d %b')} - {tgl_race_minggu.strftime('%d %b')}"
+        if is_taper:
+            label_ui  += "\n(Taper)"
+            label_pdf += " (Taper)"
 
-        # Gabungkan sesi ringan menjadi lebih sedikit
-        # Maksimal satu sesi per slot tersedia
-        sesi_gabung = []
-        # Prioritas: ambil semua sesi berat dulu (maks n_slot-1 sisi berat)
-        for s in sesi_berat[:n_slot - 1]:
-            sesi_gabung.append(s)
-        # Sisa slot diisi gabungan sesi ringan
-        sisa_slot = n_slot - len(sesi_gabung)
-        # Bagi sesi_ringan ke sisa_slot bucket
-        buckets = [""] * max(sisa_slot, 1)
-        for i, s in enumerate(sesi_ringan):
-            b = i % max(sisa_slot, 1)
-            if buckets[b]:
-                buckets[b] += " + " + s
+        baris_ui  = {"Minggu Ke-": label_ui}
+        baris_pdf = {"Minggu Ke-": label_pdf}
+
+        # Isi 7 kolom UI — iterasi per kolom UI (0=kiri ... 6=kanan/race)
+        # Untuk setiap kolom UI, cari DB hari yang berkorespondensi menggunakan
+        # db_hari_to_ui_pos: db_nama -> ui_pos
+        # Kita perlu kebalikannya: ui_pos -> db_nama
+        ui_pos_to_db_nama = {v: k for k, v in db_hari_to_ui_pos.items()}
+
+        for ui_col_idx in range(7):
+            ui_hari_nama = header_ui[ui_col_idx]
+            is_race_col  = (ui_col_idx == 6)
+            db_hari_nama = ui_pos_to_db_nama.get(ui_col_idx)
+
+            # Tanggal kolom ini (untuk cek Blm Mulai)
+            tgl_kolom = tgl_awal_ui + datetime.timedelta(days=ui_col_idx)
+
+            # Prioritas:
+            # 1. Race Day = kolom paling kanan di minggu terakhir
+            if is_race_week and is_race_col:
+                teks_ui  = f"🎯 RACE DAY!\n{jarak}"
+                teks_pdf = f"RACE DAY! {jarak}"
+
+            # 2. Belum mulai
+            elif tgl_kolom < tanggal_mulai:
+                teks_ui  = "➖ Blm Mulai"
+                teks_pdf = "Blm Mulai"
+
+            # 3. Isi dari DB Hal Higdon (urutan asli terjaga)
             else:
-                buckets[b] = s
-        for b in buckets:
-            if b:
-                sesi_gabung.append(b)
-        # Pastikan panjang = n_slot
-        sesi_gabung = sesi_gabung[:n_slot]
-        while len(sesi_gabung) < n_slot:
-            sesi_gabung.append("Istirahat")
-        sesi_latihan_final = sesi_gabung
+                sesi = menu_db.get(db_hari_nama, "Istirahat") if db_hari_nama else "Istirahat"
+                if "istirahat" in sesi.lower() and not any(
+                    x in sesi.lower() for x in ["lari", "km", "cross", "tempo", "jalan"]
+                ):
+                    teks_ui  = f"🛌 {sesi}"
+                    teks_pdf = sesi
+                elif any(x in sesi.lower() for x in ["km", "tempo", "interval", "hill", "pace", "lari", "jalan"]):
+                    teks_ui  = f"🏃 {sesi}"
+                    teks_pdf = sesi
+                else:
+                    teks_ui  = sesi
+                    teks_pdf = sesi
 
-    elif len(sesi_latihan) < n_slot:
-        # Lebih sedikit sesi dari slot: isi kekurangan dengan Istirahat
-        sesi_latihan_final = sesi_latihan + ["Istirahat"] * (n_slot - len(sesi_latihan))
-    else:
-        sesi_latihan_final = list(sesi_latihan)
+            baris_ui[ui_hari_nama]  = teks_ui
+            baris_pdf[ui_hari_nama] = teks_pdf
 
-    # ── Terapkan pola HARD-EASY ──
-    # Sort sesi: berat, ringan, berat, ringan, ... (alternating)
-    sesi_berat_f = sorted(
-        [s for s in sesi_latihan_final if bobot_sesi(s) >= 6],
-        key=bobot_sesi, reverse=True
-    )
-    sesi_ringan_f = sorted(
-        [s for s in sesi_latihan_final if bobot_sesi(s) < 6],
-        key=bobot_sesi, reverse=True
-    )
+        tabel_ui.append(baris_ui)
+        tabel_pdf.append(baris_pdf)
 
-    # Alternating: hard, easy, hard, easy...
-    sesi_alternating = []
-    hi, ei = 0, 0
-    for i in range(n_slot):
-        if i % 2 == 0 and hi < len(sesi_berat_f):
-            sesi_alternating.append(sesi_berat_f[hi])
-            hi += 1
-        elif ei < len(sesi_ringan_f):
-            sesi_alternating.append(sesi_ringan_f[ei])
-            ei += 1
-        elif hi < len(sesi_berat_f):
-            sesi_alternating.append(sesi_berat_f[hi])
-            hi += 1
-        else:
-            sesi_alternating.append("Istirahat")
-
-    # Pastikan tidak ada 2 sesi berat berturutan
-    # (jika terpaksa karena semua berat, pisahkan dengan sesi ringan)
-    sesi_final = list(sesi_alternating)
-    for i in range(1, len(sesi_final)):
-        if bobot_sesi(sesi_final[i]) >= 7 and bobot_sesi(sesi_final[i-1]) >= 7:
-            # Cari sesi ringan yang belum terpakai atau swap dengan istirahat
-            # Sisipkan istirahat (ubah sesi[i] jadi easy jika ada pengganti)
-            # Cari index sesi ringan pertama setelah i
-            swap_idx = None
-            for j in range(i+1, len(sesi_final)):
-                if bobot_sesi(sesi_final[j]) < 6:
-                    swap_idx = j
-                    break
-            if swap_idx:
-                sesi_final[i], sesi_final[swap_idx] = sesi_final[swap_idx], sesi_final[i]
-            # else: biarkan saja (tidak ada opsi lain)
-
-    # ── Assign ke hari user ──
-    for i, h in enumerate(hari_latihan_tersedia):
-        if i < len(sesi_final):
-            hasil[h] = sesi_final[i]
-        else:
-            hasil[h] = "Istirahat"
-
-    return hasil
+    return tabel_ui, tabel_pdf, header_ui, nama_hari_race
 
 
 # ─────────────────────────────────────────
-# PDF CLASS
+# PDF CLASS – A4 PORTRAIT, 2 HALAMAN
 # ─────────────────────────────────────────
 class PDFLatihan(FPDF):
+    def header(self):
+        pass  # header custom per halaman
+
     def footer(self):
-        self.set_y(-13)
+        self.set_y(-12)
         self.set_font("helvetica", "I", 7)
-        self.set_text_color(140, 140, 140)
-        self.cell(0, 8, "RunSmart - Asisten Lari Cerdas | Metodologi Hal Higdon", align="C")
+        self.set_text_color(150, 150, 150)
+        self.cell(0, 6, f"RunSmart - Asisten Lari Cerdas | Hal Higdon Methodology | Hal. {self.page_no()}", align="C")
+
 
 def clean_pdf_text(s):
-    """Hapus karakter non-latin1."""
     result = []
     for ch in str(s):
         try:
@@ -589,202 +511,533 @@ def clean_pdf_text(s):
             result.append(replacements.get(ch, ""))
     return "".join(result)
 
+
 def potong_teks(teks: str, maks_karakter: int) -> str:
-    """Potong teks agar tidak melebihi panjang maksimum."""
     t = teks.strip()
     if len(t) > maks_karakter:
         return t[:maks_karakter - 2] + ".."
     return t
 
-def buat_pdf(data, jadwal_tabel, zona, ada_interval):
-    """
-    Membuat PDF jadwal latihan landscape A4.
 
-    FIX utama:
-    - Semua 7 hari selalu ditampilkan (kolom tetap 7 + kolom minggu).
-    - Lebar kolom dihitung ulang dari ukuran halaman aktual.
-    - Teks di setiap sel SELALU dipotong sebelum di-render (tidak pernah
-      melebihi lebar sel) -> menghilangkan FPDFException.
-    - Glosarium menggunakan cell() per baris (bukan multi_cell dengan
-      width=0 yang bisa menyebabkan overflow jika margin salah).
+def _render_halaman_jadwal(pdf, data, jadwal_tabel, zona, header_ui, nama_hari_race,
+                           judul_opsi="", warna_banner=(249, 115, 22)):
     """
-    # ── Setup halaman ──
-    # A4 Landscape: 297 x 210 mm
+    Render SATU halaman jadwal A4 Portrait ke dalam objek pdf.
+    Dipanggil 1x (normal) atau 2x (dual-track: opsi aman + ambisius).
+    """
+    MARGIN_L = 8
+    MARGIN_R = 8
+    PAGE_W   = 210   # A4 Portrait
+    USABLE_W = PAGE_W - MARGIN_L - MARGIN_R  # ~194 mm
+
+    # ── Banner Header ──
+    br, bg, bb = warna_banner
+    pdf.set_fill_color(br, bg, bb)
+    pdf.rect(0, 0, PAGE_W, 22, "F")
+    pdf.set_font("helvetica", "B", 11)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_xy(MARGIN_L, 2)
+
+    judul_level = judul_opsi if judul_opsi else data['level']
+    pdf.cell(USABLE_W, 7,
+             clean_pdf_text(f"RUNSMART  |  {judul_level} - {data['jarak']}  |  {data['nama']}"),
+             align="L")
+    pdf.set_font("helvetica", "", 7.5)
+    pdf.set_xy(MARGIN_L, 10)
+    pdf.cell(USABLE_W, 5,
+             clean_pdf_text(
+                 f"Mulai: {data['tanggal_mulai']}   |   Lomba: {data['tanggal_lomba']}"
+                 f"   |   Race Day: {nama_hari_race} (kolom kanan)"
+             ), align="L")
+    pdf.set_xy(MARGIN_L, 16)
+    pdf.cell(USABLE_W, 5,
+             clean_pdf_text(
+                 f"Target Finis: {data['jam_finis']:02d}:{data['menit_finis']:02d}:{data['detik_finis']:02d}"
+                 f"   |   RP: {zona['RP']}"
+                 f"   |   Easy: {zona['Easy']}"
+                 f"   |   Tempo: {zona['Tempo']}"
+                 f"   |   Interval: {zona['Interval']}"
+             ), align="L")
+    pdf.ln(23)
+
+    # ── Setup kolom tabel ──
+    if jadwal_tabel:
+        kolom_hari = [k for k in jadwal_tabel[0].keys() if k != "Minggu Ke-"]
+    else:
+        kolom_hari = [h for h in header_ui if h]
+
+    N_HARI       = len(kolom_hari)
+    LEBAR_MG     = 20          # kolom "Minggu Ke-"
+    LEBAR_HARI   = (USABLE_W - LEBAR_MG) / N_HARI
+    TINGGI_BARIS = 7           # tinggi baris lebih kecil agar muat di portrait
+
+    # Karakter maks per sel (estimasi: ~1.55 mm per karakter pada font 5.5pt)
+    MAKS_CHAR_HARI = max(5, int(LEBAR_HARI / 1.55))
+    MAKS_CHAR_MG   = max(5, int(LEBAR_MG  / 1.55))
+
+    # ── Header tabel ──
+    pdf.set_fill_color(30, 41, 59)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", "B", 6)
+    pdf.cell(LEBAR_MG, TINGGI_BARIS, "MINGGU", border=1, align="C", fill=True)
+    for h in kolom_hari:
+        lbl = h.upper()[:8]
+        if h == nama_hari_race:
+            lbl = f"*{lbl}*"
+        pdf.cell(LEBAR_HARI, TINGGI_BARIS, clean_pdf_text(lbl), border=1, align="C", fill=True)
+    pdf.ln()
+
+    # ── Isi baris ──
+    for idx, row in enumerate(jadwal_tabel):
+        # page-break check — sisakan ruang untuk footer & keterangan
+        if pdf.get_y() > 270:
+            pdf.add_page(orientation="P")
+            # ulang header tabel setelah page break
+            pdf.set_fill_color(30, 41, 59)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("helvetica", "B", 6)
+            pdf.cell(LEBAR_MG, TINGGI_BARIS, "MINGGU (lanjutan)", border=1, align="C", fill=True)
+            for h in kolom_hari:
+                lbl = h.upper()[:8]
+                if h == nama_hari_race:
+                    lbl = f"*{lbl}*"
+                pdf.cell(LEBAR_HARI, TINGGI_BARIS, clean_pdf_text(lbl), border=1, align="C", fill=True)
+            pdf.ln()
+
+        if idx % 2 == 0:
+            pdf.set_fill_color(248, 249, 252)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        pdf.set_text_color(30, 41, 59)
+
+        mg_raw   = str(row.get("Minggu Ke-", "-")).replace("\n", " ").replace("(Taper)", "(T)")
+        mg_clean = potong_teks(clean_pdf_text(mg_raw), MAKS_CHAR_MG)
+        pdf.set_font("helvetica", "", 5.5)
+        pdf.cell(LEBAR_MG, TINGGI_BARIS, mg_clean, border=1, align="C", fill=True)
+
+        for hari in kolom_hari:
+            teks_raw   = str(row.get(hari, "-"))
+            teks_clean = clean_pdf_text(
+                teks_raw
+                .replace("🛌 ", "").replace("🏃 ", "").replace("➖ ", "")
+                .replace("🎯 ", "").replace("🏁", "").replace("✅", "")
+                .replace("\n", " ").strip()
+            )
+            teks_ptg = potong_teks(teks_clean, MAKS_CHAR_HARI)
+
+            is_race = "RACE DAY" in teks_raw.upper()
+            is_long = (hari == nama_hari_race) and not is_race
+
+            if is_race:
+                pdf.set_font("helvetica", "B", 6)
+                pdf.set_text_color(200, 50, 0)
+            elif is_long:
+                pdf.set_font("helvetica", "I", 5.5)
+                pdf.set_text_color(20, 90, 180)
+            else:
+                pdf.set_font("helvetica", "", 5.5)
+                pdf.set_text_color(30, 41, 59)
+
+            pdf.cell(LEBAR_HARI, TINGGI_BARIS, teks_ptg, border=1, align="C", fill=True)
+            pdf.set_text_color(30, 41, 59)
+
+        pdf.ln()
+
+    # ── Keterangan bawah ──
+    pdf.ln(1)
+    pdf.set_font("helvetica", "", 5.5)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(USABLE_W, 4,
+             clean_pdf_text(
+                 f"*{nama_hari_race} = Race Day & Long Run (kolom kanan).  "
+                 "Biru miring = Long Run.  Merah tebal = Race Day."
+             ), align="L")
+
+
+def _render_halaman_edukasi(pdf, data, zona):
+    """Render halaman Pusat Edukasi Lari (A4 Portrait)."""
+    MARGIN_L  = 8
+    MARGIN_R  = 8
+    PAGE_W_P  = 210
+    USABLE_WP = PAGE_W_P - MARGIN_L - MARGIN_R  # ~194 mm
+
+    # ── Banner ──
+    pdf.set_fill_color(30, 41, 59)
+    pdf.rect(0, 0, PAGE_W_P, 22, "F")
+    pdf.set_font("helvetica", "B", 14)
+    pdf.set_text_color(249, 115, 22)
+    pdf.set_xy(MARGIN_L, 3)
+    pdf.cell(USABLE_WP, 9, "PUSAT EDUKASI LARI", align="C")
+    pdf.set_font("helvetica", "", 7.5)
+    pdf.set_text_color(200, 200, 200)
+    pdf.set_xy(MARGIN_L, 13)
+    pdf.cell(USABLE_WP, 6,
+             clean_pdf_text(f"RunSmart - Program {data['level']} {data['jarak']} | {data['nama']}"),
+             align="C")
+    pdf.ln(22)
+
+    # ── Zona Pace Box ──
+    box_y = pdf.get_y()
+    pdf.set_fill_color(255, 248, 240)
+    pdf.set_draw_color(249, 115, 22)
+    pdf.set_line_width(0.4)
+    pdf.rect(MARGIN_L, box_y, USABLE_WP, 26, "FD")
+    pdf.set_xy(MARGIN_L + 3, box_y + 2)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.set_text_color(180, 60, 0)
+    pdf.cell(USABLE_WP - 6, 5, "ZONA PACE TARGET LATIHAN ANDA", align="C")
+    pdf.ln(6)
+
+    zona_items = [
+        ("Race Pace (RP)", zona["RP"]),
+        ("Easy / Long Run", zona["Easy"]),
+        ("Tempo",           zona["Tempo"]),
+        ("Interval",        zona["Interval"]),
+        ("Long Run Safe",   zona["Long"]),
+    ]
+    col_w_z = (USABLE_WP - 6) / 2
+    for i in range(0, len(zona_items), 2):
+        pdf.set_x(MARGIN_L + 3)
+        for j in range(2):
+            if i + j < len(zona_items):
+                lbl, val = zona_items[i + j]
+                pdf.set_font("helvetica", "B", 7)
+                pdf.set_text_color(80, 80, 80)
+                pdf.cell(col_w_z * 0.45, 4.5, clean_pdf_text(lbl + ": "))
+                pdf.set_font("helvetica", "B", 7)
+                pdf.set_text_color(200, 60, 0)
+                pdf.cell(col_w_z * 0.55, 4.5, clean_pdf_text(val))
+        pdf.ln(4.5)
+    pdf.ln(4)
+
+    # ── Helper untuk render satu section ──
+    def section(col_x, col_w, title, lines, fill_rgb):
+        pdf.set_x(col_x)
+        pdf.set_fill_color(*fill_rgb)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("helvetica", "B", 7.5)
+        pdf.cell(col_w, 6, clean_pdf_text(f"  {title}"), fill=True)
+        pdf.set_xy(col_x, pdf.get_y() + 6)
+        pdf.ln(0.5)
+        pdf.set_text_color(40, 40, 40)
+        pdf.set_font("helvetica", "", 6.5)
+        for line in lines:
+            pdf.set_x(col_x + 2)
+            pdf.cell(col_w - 2, 4, clean_pdf_text(f"- {line}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2.5)
+
+    # ── Dua kolom ──
+    TOP_Y  = pdf.get_y()
+    COL_W  = (USABLE_WP - 4) / 2
+    COL1_X = MARGIN_L
+    COL2_X = MARGIN_L + COL_W + 4
+
+    # KOLOM KIRI
+    pdf.set_xy(COL1_X, TOP_Y)
+    section(COL1_X, COL_W, "TAPERING", [
+        "Pengurangan beban latihan menjelang hari H.",
+        "Tujuan: mengisi ulang energi otot yang terkuras.",
+        "Marathon = 3 mgg | Half Marathon/10K = 1-2 mgg | 5K = 1 mgg.",
+        "JANGAN tambah latihan baru saat tapering!",
+        "Rasa berat / gelisah saat tapering adalah NORMAL.",
+    ], (30, 41, 59))
+    section(COL1_X, COL_W, "LONG RUN", [
+        "Sesi terpenting per minggu — fondasi daya tahan.",
+        "Selalu berlari LEBIH LAMBAT dari race pace.",
+        "Target: bisa berlari sambil mengobrol (RPE 5/10).",
+        "Di RunSmart, Long Run = kolom Race Day setiap minggu.",
+        "Naikkan jarak maks 10% per minggu (10% Rule).",
+        "Jangan skip Long Run — tidak bisa diganti sesi lain.",
+    ], (20, 80, 160))
+    section(COL1_X, COL_W, "LATIHAN INTERVAL", [
+        "Contoh: 4 x 400m (4 repetisi sejauh 400 meter).",
+        "1. Pemanasan jogging 1-2 km pelan.",
+        "2. Lari SECEPAT mungkin sejauh jarak yg ditentukan.",
+        "3. Recovery: jalan / jogging pelan 2-3 menit.",
+        "4. Ulangi sesuai jumlah set (mis. 4 kali).",
+        "5. Pendinginan jogging 1 km pelan.",
+        "Manfaat: tingkatkan VO2max & kecepatan puncak.",
+    ], (180, 30, 30))
+    section(COL1_X, COL_W, "PRINSIP HARD-EASY", [
+        "Pilar utama metodologi Hal Higdon.",
+        "Setelah sesi BERAT, WAJIB ada sesi ringan/istirahat.",
+        "Tidak boleh 2 hari berat berurutan.",
+        "Otot perlu 24-48 jam untuk pulih dan bertumbuh.",
+        "Contoh: Sel. Interval -> Rab. Easy -> Kam. Tempo.",
+        "Melanggar prinsip ini = risiko overtraining & cedera.",
+    ], (100, 60, 160))
+
+    y_after_col1 = pdf.get_y()
+
+    # KOLOM KANAN
+    pdf.set_xy(COL2_X, TOP_Y)
+    section(COL2_X, COL_W, "LARI TEMPO", [
+        "Bukan sprint — berlari di ambang anaerobik.",
+        "RPE sekitar 7/10 (agak susah ngobrol).",
+        "1. Pemanasan 15 menit jogging pelan.",
+        "2. Akselerasi ke race pace, tahan 10-20 menit.",
+        "3. Pendinginan 10 menit jogging pelan.",
+        "Manfaat: tingkatkan lactic threshold.",
+        "Lakukan 1x per minggu — jangan berlebihan.",
+    ], (180, 100, 0))
+    section(COL2_X, COL_W, "CROSS TRAINING", [
+        "Olahraga aerobik selain lari, 30-60 menit.",
+        "BOLEH: Bersepeda, renang, jalan cepat, elliptical.",
+        "DILARANG: Futsal, basket, badminton (risiko keseleo).",
+        "Tujuan: jaga kebugaran tanpa beban ke kaki.",
+        "Bisa diganti istirahat aktif jika kaki sangat lelah.",
+    ], (0, 130, 100))
+    section(COL2_X, COL_W, "STEPBACK / RECOVERY WEEK", [
+        "Jarak tidak selalu naik — ada minggu yang turun.",
+        "Pola umum: naik 3 minggu, turun 1 minggu.",
+        "Ini BUKAN kemunduran — bagian penting program!",
+        "Tubuh makin kuat saat ada istirahat & recovery.",
+        "Jangan tambah volume sendiri saat stepback week.",
+    ], (60, 100, 60))
+    section(COL2_X, COL_W, "TIPS RACE DAY", [
+        "Jangan coba hal baru di hari H (sepatu, gel, dll).",
+        "Sarapan 2-3 jam sebelum start, sudah teruji.",
+        "Start PELAN — jangan terbawa euforia crowd.",
+        "Minum cukup, jangan tunggu haus baru minum.",
+        "Km terakhir: keluarkan semua yang tersisa!",
+        "Nikmati pencapaian Anda — Anda sudah luar biasa!",
+    ], (200, 60, 0))
+
+    y_after_col2 = pdf.get_y()
+    pdf.set_y(max(y_after_col1, y_after_col2) + 3)
+
+    # ── Kamus Istilah ──
+    pdf.set_fill_color(249, 115, 22)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.cell(USABLE_WP, 6, "  KAMUS ISTILAH LARI",
+             border=0, new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.ln(1)
+
+    glosarium = [
+        ("Conversational Pace", "Kecepatan lari sambil bisa berbicara — kecepatan Easy Run ideal."),
+        ("RPE",                 "Rate of Perceived Exertion: skala 1-10 rasa berat latihan."),
+        ("VO2max",              "Volume oksigen maksimal tubuh — indikator utama kebugaran aerobik."),
+        ("Lactic Threshold",    "Titik akumulasi asam laktat — target utama latihan Tempo."),
+        ("Fartlek",             "Variasi kecepatan bebas selama lari — campuran santai dan cepat."),
+        ("Negative Split",      "Paruh kedua lomba lebih cepat dari paruh pertama — strategi ideal."),
+        ("BQ",                  "Boston Qualify: waktu minimal lolos kualifikasi Boston Marathon."),
+        ("DNS / DNF",           "Did Not Start / Did Not Finish — hindari dengan persiapan matang."),
+    ]
+    col_w_g = USABLE_WP / 2 - 2
+    for i in range(0, len(glosarium), 2):
+        pdf.set_x(MARGIN_L)
+        for j in range(2):
+            if i + j < len(glosarium):
+                ist, art = glosarium[i + j]
+                pdf.set_font("helvetica", "B", 6)
+                pdf.set_text_color(180, 60, 0)
+                pdf.cell(col_w_g * 0.32, 4, clean_pdf_text(f"{ist}: "))
+                pdf.set_font("helvetica", "", 6)
+                pdf.set_text_color(50, 50, 50)
+                pdf.cell(col_w_g * 0.68, 4,
+                         clean_pdf_text(potong_teks(art, int(col_w_g * 0.68 / 1.45))))
+                if j == 0:
+                    pdf.set_x(MARGIN_L + col_w_g + 4)
+        pdf.ln(4)
+
+    # ── Motivasi ──
+    pdf.ln(2)
+    pdf.set_fill_color(30, 41, 59)
+    pdf.set_text_color(249, 115, 22)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.cell(USABLE_WP, 8,
+             clean_pdf_text(
+                 '"Train smart, run happy. Setiap langkah membawa Anda lebih dekat ke garis finish."'
+             ),
+             border=0, new_x="LMARGIN", new_y="NEXT", fill=True, align="C")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FUNGSI UTAMA PDF
+# Mendukung:
+#   - Mode normal  : 1 jadwal → Hal.1 Jadwal | Hal.2 Edukasi
+#   - Mode dual    : 2 jadwal → Hal.1 Aman | Hal.2 Ambisius | Hal.3 Edukasi
+# ─────────────────────────────────────────────────────────────────────────────
+def buat_pdf(data, jadwal_tabel, zona, header_ui, nama_hari_race,
+             jadwal_tabel_2=None, zona_2=None, header_ui_2=None,
+             level_aman_label="", level_ambisi_label=""):
+    """
+    jadwal_tabel   : tabel PDF opsi utama (atau opsi aman jika dual-track)
+    jadwal_tabel_2 : tabel PDF opsi ambisius (None = mode normal)
+    """
     MARGIN_L = 8
     MARGIN_R = 8
     MARGIN_T = 14
 
-    pdf = PDFLatihan(orientation="L", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf = PDFLatihan(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=14)
     pdf.set_margins(MARGIN_L, MARGIN_T, MARGIN_R)
-    pdf.add_page()
 
-    PAGE_W = 297  # mm landscape
-    USABLE_W = PAGE_W - MARGIN_L - MARGIN_R  # ~281 mm
+    # ── Halaman 1: Jadwal Utama / Jadwal Aman ──
+    pdf.add_page(orientation="P")
+    judul1 = level_aman_label if level_aman_label else data["level"]
+    banner1 = (16, 185, 129) if jadwal_tabel_2 else (249, 115, 22)   # hijau jika dual, oranye jika normal
+    _render_halaman_jadwal(pdf, data, jadwal_tabel, zona, header_ui, nama_hari_race,
+                           judul_opsi=judul1, warna_banner=banner1)
 
-    # ── HEADER BANNER ──
+    # ── Halaman 2 (hanya jika dual-track): Jadwal Ambisius ──
+    if jadwal_tabel_2 is not None:
+        pdf.add_page(orientation="P")
+        judul2 = level_ambisi_label if level_ambisi_label else data["level"]
+        _render_halaman_jadwal(pdf, data, jadwal_tabel_2, zona_2, header_ui_2, nama_hari_race,
+                               judul_opsi=judul2, warna_banner=(239, 68, 68))  # merah = ambisius
+
+    # ── Halaman terakhir: Pusat Edukasi ──
+    pdf.add_page(orientation="P")
+    # Gunakan zona opsi aman (atau satu-satunya) untuk edukasi
+    _render_halaman_edukasi(pdf, data, zona)
+
+    return bytes(pdf.output())
+
+    # 5. Lari Tempo
+    pdf.set_x(COL2_X)
+    pdf.set_fill_color(180, 100, 0)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.cell(COL_W, 6, "  LARI TEMPO", fill=True)
+    pdf.set_xy(COL2_X, pdf.get_y() + 6)
+    pdf.ln(1)
+    pdf.set_text_color(40, 40, 40)
+    pdf.set_font("helvetica", "", 7)
+    tempo_lines = [
+        "Bukan sprint — berlari di ambang anaerobik.",
+        "RPE sekitar 7/10 (agak susah ngobrol).",
+        "1. Pemanasan 15 menit jogging pelan.",
+        "2. Akselerasi ke race pace, tahan 10-20 menit.",
+        "3. Pendinginan 10 menit jogging pelan.",
+        "Manfaat: tingkatkan lactic threshold.",
+        "Lakukan 1x per minggu saja — jangan berlebihan.",
+    ]
+    for line in tempo_lines:
+        pdf.set_x(COL2_X + 2)
+        pdf.cell(COL_W - 2, 4.5, clean_pdf_text(f"- {line}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_x(COL2_X)
+    pdf.ln(3)
+
+    # 6. Cross Training
+    pdf.set_x(COL2_X)
+    pdf.set_fill_color(0, 130, 100)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.cell(COL_W, 6, "  CROSS TRAINING")
+    pdf.set_xy(COL2_X, pdf.get_y() + 6)
+    pdf.ln(1)
+    pdf.set_text_color(40, 40, 40)
+    pdf.set_font("helvetica", "", 7)
+    cross_lines = [
+        "Olahraga aerobik selain lari, 30-60 menit.",
+        "BOLEH: Bersepeda, renang, jalan cepat, elliptical.",
+        "DILARANG: Futsal, basket, badminton (risiko keseleo).",
+        "Tujuan: jaga kebugaran tanpa beban ke kaki.",
+        "Bisa diganti istirahat aktif jika kaki sangat lelah.",
+    ]
+    for line in cross_lines:
+        pdf.set_x(COL2_X + 2)
+        pdf.cell(COL_W - 2, 4.5, clean_pdf_text(f"- {line}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_x(COL2_X)
+    pdf.ln(3)
+
+    # 7. Stepback / Recovery Week
+    pdf.set_x(COL2_X)
+    pdf.set_fill_color(60, 100, 60)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.cell(COL_W, 6, "  STEPBACK / RECOVERY WEEK")
+    pdf.set_xy(COL2_X, pdf.get_y() + 6)
+    pdf.ln(1)
+    pdf.set_text_color(40, 40, 40)
+    pdf.set_font("helvetica", "", 7)
+    step_lines = [
+        "Jarak tidak selalu naik — ada minggu yang turun.",
+        "Pola umum: naik 3 minggu, turun 1 minggu.",
+        "Ini BUKAN kemunduran — ini bagian dari program!",
+        "Tubuh menjadi lebih kuat saat istirahat & recovery.",
+        "Jangan tambah volume sendiri saat stepback week.",
+    ]
+    for line in step_lines:
+        pdf.set_x(COL2_X + 2)
+        pdf.cell(COL_W - 2, 4.5, clean_pdf_text(f"- {line}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_x(COL2_X)
+    pdf.ln(3)
+
+    # 8. Tips Race Day
+    pdf.set_x(COL2_X)
+    pdf.set_fill_color(200, 60, 0)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("helvetica", "B", 8)
+    pdf.cell(COL_W, 6, "  TIPS RACE DAY")
+    pdf.set_xy(COL2_X, pdf.get_y() + 6)
+    pdf.ln(1)
+    pdf.set_text_color(40, 40, 40)
+    pdf.set_font("helvetica", "", 7)
+    race_lines = [
+        "Jangan mencoba hal baru di hari H (sepatu, gel, dll).",
+        "Sarapan 2-3 jam sebelum start, sudah teruji.",
+        "Start PELAN — jangan terbawa euforia crowd.",
+        "Minum cukup, jangan tunggu haus baru minum.",
+        "Km terakhir: keluarkan semua yang tersisa!",
+        "Nikmati pencapaian Anda — Anda sudah luar biasa!",
+    ]
+    for line in race_lines:
+        pdf.set_x(COL2_X + 2)
+        pdf.cell(COL_W - 2, 4.5, clean_pdf_text(f"- {line}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.set_x(COL2_X)
+
+    y_after_col2 = pdf.get_y()
+
+    # ── Pindah ke bawah kolom terpanjang ──
+    pdf.set_y(max(y_after_col1, y_after_col2) + 4)
+
+    # ── Glosarium Istilah ──
     pdf.set_fill_color(249, 115, 22)
-    pdf.rect(0, 0, PAGE_W, 22, "F")
-    pdf.set_font("helvetica", "B", 13)
     pdf.set_text_color(255, 255, 255)
-    pdf.set_xy(MARGIN_L, 4)
-    pdf.cell(
-        USABLE_W, 8,
-        clean_pdf_text(f"RUNSMART  |  Rencana: {data['level']} {data['jarak']}  |  {data['nama']}"),
-        align="L"
-    )
-    pdf.set_font("helvetica", "", 8)
-    pdf.set_xy(MARGIN_L, 13)
-    pdf.cell(
-        USABLE_W, 6,
-        clean_pdf_text(
-            f"Mulai: {data['tanggal_mulai']}   Lomba: {data['tanggal_lomba']}"
-            f"   Hari Latihan: {', '.join(data['hari_terpilih'])}"
-        ),
-        align="L"
-    )
-    pdf.ln(14)
+    pdf.set_font("helvetica", "B", 9)
+    pdf.cell(USABLE_WP, 7, "  KAMUS ISTILAH LARI",
+             border=0, new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.ln(1)
 
-    # ── INFO ZONA TARGET ──
-    pdf.set_fill_color(245, 245, 245)
-    pdf.set_text_color(30, 30, 30)
-    pdf.set_font("helvetica", "B", 8)
-    target_str = clean_pdf_text(
-        f"Target Finis: {data['jam_finis']:02d}:{data['menit_finis']:02d}:{data['detik_finis']:02d}"
-        f"   RP: {zona['RP']}"
-        f"   Easy: {zona['Easy']}"
-        f"   Tempo: {zona['Tempo']}"
-        f"   Interval: {zona['Interval']}"
-        f"   Long: {zona['Long']}"
-    )
-    pdf.cell(USABLE_W, 7, target_str, border=1, new_x="LMARGIN", new_y="NEXT", align="C", fill=True)
-    pdf.ln(3)
-
-    # ── TENTUKAN KOLOM ──
-    # Selalu 7 hari + 1 kolom minggu
-    if jadwal_tabel:
-        kolom_hari = [k for k in jadwal_tabel[0].keys() if k != "Minggu Ke-"]
-    else:
-        kolom_hari = NAMA_HARI_STANDAR
-
-    # Lebar kolom: kolom minggu lebih lebar, 7 hari dibagi rata
-    LEBAR_MINGGU = 26  # mm
-    LEBAR_HARI = (USABLE_W - LEBAR_MINGGU) / max(len(kolom_hari), 1)
-    TINGGI_BARIS = 9
-
-    # Hitung maks karakter yang muat di setiap sel hari
-    # Helvetica 7pt: ~1.8 mm per karakter (konservatif)
-    MAKS_CHAR_HARI = max(6, int(LEBAR_HARI / 1.85))
-    MAKS_CHAR_MINGGU = max(6, int(LEBAR_MINGGU / 1.85))
-
-    # ── HEADER TABEL ──
-    pdf.set_fill_color(30, 41, 59)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("helvetica", "B", 7)
-    pdf.cell(LEBAR_MINGGU, TINGGI_BARIS, "MINGGU", border=1, align="C", fill=True)
-    for h in kolom_hari:
-        pdf.cell(LEBAR_HARI, TINGGI_BARIS, clean_pdf_text(h[:10].upper()), border=1, align="C", fill=True)
-    pdf.ln()
-
-    # ── ISI TABEL ──
-    for idx, row in enumerate(jadwal_tabel):
-        even = idx % 2 == 0
-        if even:
-            pdf.set_fill_color(248, 249, 252)
-        else:
-            pdf.set_fill_color(255, 255, 255)
-
-        pdf.set_text_color(30, 41, 59)
-
-        # Label minggu
-        minggu_raw = str(row.get("Minggu Ke-", "-")).replace("\n", " ").replace("Tapering", "Taper")
-        minggu_clean = potong_teks(clean_pdf_text(minggu_raw), MAKS_CHAR_MINGGU)
-        pdf.set_font("helvetica", "", 6.5)
-        pdf.cell(LEBAR_MINGGU, TINGGI_BARIS, minggu_clean, border=1, align="C", fill=True)
-
-        for hari in kolom_hari:
-            teks_raw = str(row.get(hari, "-"))
-            # Bersihkan emoji dan karakter khusus
-            teks_clean = clean_pdf_text(
-                teks_raw
-                .replace("🛌 ", "").replace("🏃 ", "").replace("➖ ", "")
-                .replace("🏁", "").replace("🎯 ", "").replace("📉", "")
-                .replace("✅", "").replace("⬛", "")
-                .replace("\n", " ").strip()
-            )
-            teks_potong = potong_teks(teks_clean, MAKS_CHAR_HARI)
-
-            is_race = "RACE DAY" in teks_raw.upper() or "RACE DAY" in teks_clean.upper()
-            if is_race:
-                pdf.set_font("helvetica", "B", 7)
-                pdf.set_text_color(200, 50, 0)
-            else:
-                pdf.set_font("helvetica", "", 6.5)
-                pdf.set_text_color(30, 41, 59)
-
-            pdf.cell(LEBAR_HARI, TINGGI_BARIS, teks_potong, border=1, align="C", fill=True)
-
-        pdf.set_text_color(30, 41, 59)
-        pdf.ln()
-
-    # ── GLOSARIUM ──
-    # Gunakan lebar eksplisit (USABLE_W) agar tidak overflow
-    pdf.ln(3)
-    pdf.set_fill_color(30, 41, 59)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("helvetica", "B", 8)
-    pdf.cell(USABLE_W, 7, "PANDUAN & GLOSARIUM ISTILAH LATIHAN",
-             border=0, new_x="LMARGIN", new_y="NEXT", fill=True, align="C")
-    pdf.set_text_color(30, 41, 59)
-    pdf.ln(2)
-
-    if ada_interval:
-        pdf.set_font("helvetica", "B", 7)
-        interval_lines = [
-            "INTERVAL (cth 4x400m):",
-            "1) Pemanasan 1-2 km  2) Lari cepat sejauh instruksi",
-            "3) Jalan/joging pelan 2-3 menit  4) Ulangi sesuai set  5) Pendinginan 1 km",
-        ]
-        for line in interval_lines:
-            pdf.set_x(MARGIN_L)
-            pdf.cell(USABLE_W, 4, clean_pdf_text(line), new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("helvetica", "", 7)
-        pdf.ln(1)
-
-    glosarium_items = [
-        ("ISTIRAHAT", "Vital untuk pemulihan otot. Tubuh bertambah kuat saat istirahat."),
-        ("LARI SANTAI", "Fokus jarak. Wajib bisa berlari sambil mengobrol (Conversational Pace)."),
-        ("LARI TARGET/PACE", "Berlari persis di kecepatan Race Pace (RP) Anda."),
-        ("LARI TEMPO", "Latih ambang anaerobik: pemanasan -> akselerasi ke RP -> pendinginan."),
-        ("LONG RUN", "Daya tahan mingguan, SELALU lebih lambat dari target race pace."),
-        ("CROSS TRAINING", "Sepeda/renang 30-60 menit. DILARANG: futsal, basket (risiko keseleo)."),
-        ("TAPERING", "Pengurangan beban latihan 1-3 minggu sebelum lomba."),
-        ("HARD-EASY", "Sesi berat tidak pernah berurutan. Setelah latihan keras, istirahat/santai."),
+    glosarium = [
+        ("Conversational Pace",  "Kecepatan lari sambil bisa berbicara nyaman — kecepatan Easy Run ideal."),
+        ("RPE",                  "Rate of Perceived Exertion: skala 1-10 seberapa berat terasa latihan."),
+        ("VO2max",               "Volume oksigen maksimal yang bisa dipakai tubuh — indikator kebugaran."),
+        ("Lactic Threshold",     "Titik di mana asam laktat terakumulasi — target latihan Tempo."),
+        ("BQ / Boston Qualify",  "Waktu minimal untuk lolos kualifikasi Boston Marathon."),
+        ("Fartlek",              "Variasi kecepatan bebas selama lari — campuran santai dan cepat."),
+        ("Negative Split",       "Paruh kedua lomba lebih cepat dari paruh pertama — strategi ideal."),
+        ("DNS / DNF",            "Did Not Start / Did Not Finish — hindari dengan persiapan matang."),
     ]
 
-    pdf.set_font("helvetica", "", 7)
-    # Dua kolom glosarium untuk menghemat ruang
-    half = USABLE_W / 2 - 2
-    col_items = [glosarium_items[i::2] for i in range(2)]  # split jadi 2 kolom
-    max_rows = max(len(c) for c in col_items)
-
-    for row_i in range(max_rows):
+    col_w_g = USABLE_WP / 2 - 2
+    for i in range(0, len(glosarium), 2):
         pdf.set_x(MARGIN_L)
-        for col_i, col in enumerate(col_items):
-            if row_i < len(col):
-                istilah, arti = col[row_i]
-                baris = f"  {istilah}: {arti}"
-                baris_clean = potong_teks(clean_pdf_text(baris), int(half / 1.65))
-                pdf.set_font("helvetica", "B", 7)
-                # Hanya cetak istilah bold
-                istilah_clean = potong_teks(clean_pdf_text(f"  {istilah}: "), 20)
-                pdf.cell(len(istilah_clean) * 1.65, 4, istilah_clean)
-                pdf.set_font("helvetica", "", 7)
-                arti_clean = potong_teks(clean_pdf_text(arti), int(half / 1.65) - 20)
-                pdf.cell(half - len(istilah_clean) * 1.65, 4, arti_clean)
-            else:
-                pdf.cell(half, 4, "")
-        pdf.ln()
+        for j in range(2):
+            if i + j < len(glosarium):
+                istilah, arti = glosarium[i + j]
+                pdf.set_font("helvetica", "B", 6.5)
+                pdf.set_text_color(180, 60, 0)
+                pdf.cell(col_w_g * 0.38, 4.5, clean_pdf_text(f"{istilah}: "))
+                pdf.set_font("helvetica", "", 6.5)
+                pdf.set_text_color(50, 50, 50)
+                arti_ptg = potong_teks(arti, int(col_w_g * 0.62 / 1.55))
+                pdf.cell(col_w_g * 0.62, 4.5, clean_pdf_text(arti_ptg))
+                if j == 0:
+                    pdf.set_x(MARGIN_L + col_w_g + 4)
+        pdf.ln(4.5)
+
+    # ── Footer motivasi ──
+    pdf.ln(3)
+    pdf.set_fill_color(30, 41, 59)
+    pdf.set_text_color(249, 115, 22)
+    pdf.set_font("helvetica", "B", 9)
+    pdf.cell(USABLE_WP, 8,
+             clean_pdf_text('"Train smart, run happy. Setiap langkah membawa Anda lebih dekat ke garis finish."'),
+             border=0, new_x="LMARGIN", new_y="NEXT", fill=True, align="C")
 
     return bytes(pdf.output())
 
@@ -809,7 +1062,7 @@ if st.session_state.page == "onboarding":
     <div style="margin-bottom:32px;">
         <span class="stat-badge">🏃 5K – Marathon</span>
         <span class="stat-badge">📊 Hal Higdon Database</span>
-        <span class="stat-badge">📄 Export PDF</span>
+        <span class="stat-badge">📄 Export PDF 2 Halaman</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -845,9 +1098,9 @@ if st.session_state.page == "onboarding":
         ez_m = c1.number_input("Pace Santai – Menit", min_value=3, max_value=15, value=7)
         ez_s = c2.number_input("Pace Santai – Detik", min_value=0, max_value=59, value=0)
 
-        jarak_km = jarak_ke_km[jarak_target]
-        ez_sec_tmp = (ez_m * 60) + ez_s
-        rp_sec_tmp = ez_sec_tmp - 70
+        jarak_km    = jarak_ke_km[jarak_target]
+        ez_sec_tmp  = (ez_m * 60) + ez_s
+        rp_sec_tmp  = ez_sec_tmp - 70
         if rp_sec_tmp > 0:
             total_tmp = rp_sec_tmp * jarak_km
             j_p = int(total_tmp // 3600)
@@ -864,9 +1117,9 @@ if st.session_state.page == "onboarding":
     elif "Ambisius" in metode_target:
         st.warning("Masukkan target waktu finis impian Anda.")
         cj, cm, cs = st.columns(3)
-        jam_finis    = cj.number_input("Jam",   min_value=0, max_value=10, value=0)
-        menit_finis  = cm.number_input("Menit", min_value=0, max_value=59, value=25)
-        detik_finis  = cs.number_input("Detik", min_value=0, max_value=59, value=0)
+        jam_finis   = cj.number_input("Jam",   min_value=0, max_value=10, value=0)
+        menit_finis = cm.number_input("Menit", min_value=0, max_value=59, value=25)
+        detik_finis = cs.number_input("Detik", min_value=0, max_value=59, value=0)
 
     st.markdown("---")
 
@@ -890,32 +1143,16 @@ if st.session_state.page == "onboarding":
 
     st.markdown("---")
 
-    # ─── HARI LATIHAN ───
-    st.markdown("### 📅 Pilih Hari Latihan Anda")
+    # ─── KALENDER – tanggal lomba & mulai ───
+    st.markdown("### 🗓️ Kalender Program")
     st.markdown(
-        "<p style='color:var(--text-2);font-size:0.88rem;margin-bottom:4px;'>"
-        "Centang hari-hari yang bisa digunakan untuk berlatih. "
-        "Hari yang tidak dipilih otomatis menjadi Istirahat.</p>"
-        "<p style='color:#fdba74;font-size:0.82rem;margin-bottom:12px;'>"
-        "💡 Hari lomba (Race Day) akan selalu tampil di kolom paling kanan jadwal. "
-        "Long Run selalu dijadwalkan di hari yang sama dengan Race Day.</p>",
+        "<p style='color:#94a3b8;font-size:0.88rem;margin-bottom:4px;'>"
+        "Pilih tanggal lomba Anda. Jadwal dari Hal Higdon akan langsung disesuaikan "
+        "sehingga <strong style='color:#fdba74;'>hari Race Day selalu tampil di kolom paling kanan</strong> "
+        "tabel, dan Long Run setiap minggu juga jatuh di hari yang sama.</p>",
         unsafe_allow_html=True
     )
 
-    col_hari = st.columns(7)
-    hari_terpilih = []
-    default_hari = [True, True, False, True, False, True, True]
-    for i, hari in enumerate(NAMA_HARI_STANDAR):
-        with col_hari[i]:
-            if st.checkbox(hari, value=default_hari[i], key=f"hari_{i}"):
-                hari_terpilih.append(hari)
-
-    if len(hari_terpilih) < 3:
-        st.warning("⚠️ Disarankan memilih minimal 3 hari latihan per minggu untuk hasil optimal.")
-
-    st.markdown("---")
-
-    st.markdown("### 🗓️ Kalender Program")
     hari_ini = datetime.date.today()
     col_l, col_r = st.columns(2)
     with col_l:
@@ -933,12 +1170,11 @@ if st.session_state.page == "onboarding":
             max_value=tanggal_lomba - datetime.timedelta(days=1)
         )
 
-    sisa_hari  = (tanggal_lomba - tanggal_mulai).days
-    sisa_waktu = max(1, (sisa_hari // 7) + 1)
-    durasi_str = format_durasi(sisa_hari)
-
-    # Tampilkan hari race day
+    sisa_hari   = (tanggal_lomba - tanggal_mulai).days
+    sisa_waktu  = max(1, (sisa_hari // 7) + 1)
+    durasi_str  = format_durasi(sisa_hari)
     nama_hari_lomba_str = NAMA_HARI_STANDAR[tanggal_lomba.weekday()]
+
     st.markdown(
         f"""<div class="duration-display">
             <span style="font-size:1.8rem;">⏳</span>
@@ -948,20 +1184,13 @@ if st.session_state.page == "onboarding":
                 </div>
                 <div style="font-family:'Space Grotesk',sans-serif;font-size:0.88rem;color:#94a3b8;margin-top:4px;">
                     Mulai {tanggal_mulai.strftime('%d %b %Y')} &rarr; Lomba {tanggal_lomba.strftime('%d %b %Y')}
-                    &nbsp;·&nbsp; Race Day jatuh pada: <strong style="color:#fdba74;">{nama_hari_lomba_str}</strong>
-                    &nbsp;·&nbsp; Kolom {nama_hari_lomba_str} = Long Run &amp; Race Day
+                    &nbsp;·&nbsp; Race Day: <strong style="color:#fdba74;">{nama_hari_lomba_str}</strong>
+                    &nbsp;·&nbsp; Kolom <strong style="color:#fdba74;">{nama_hari_lomba_str}</strong> = Long Run &amp; Race Day di tabel
                 </div>
             </div>
         </div>""",
         unsafe_allow_html=True
     )
-
-    # Peringatan jika hari lomba tidak ada di hari terpilih
-    if nama_hari_lomba_str not in hari_terpilih:
-        st.info(
-            f"ℹ️ Hari lomba ({nama_hari_lomba_str}) tidak ada di hari latihan yang Anda pilih. "
-            f"Sistem tetap menampilkan kolom {nama_hari_lomba_str} sebagai Race Day & Long Run."
-        )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -972,9 +1201,6 @@ if st.session_state.page == "onboarding":
     if tombol:
         if not nama.strip():
             st.error("❌ Nama lengkap harus diisi!")
-            st.stop()
-        if len(hari_terpilih) == 0:
-            st.error("❌ Pilih minimal 1 hari latihan!")
             st.stop()
 
         pesan_peringatan = ""
@@ -1005,10 +1231,10 @@ if st.session_state.page == "onboarding":
             opsi = [k for k in level_tersedia if "Novice" in k]
             base_level = next((k for k in opsi if "2" in k), opsi[-1] if opsi else level_tersedia[0])
 
-        level_final  = base_level
+        level_final      = base_level
         resiko_ditemukan = False
-        rp_sec_aman  = rp_sec
-        level_aman   = base_level
+        rp_sec_aman      = rp_sec
+        level_aman       = base_level
 
         batas_bawah_db = {"5K": 3, "10K": 4, "Half Marathon": 8, "Marathon": 12}
         batas_bawah    = batas_bawah_db[jarak_target]
@@ -1026,14 +1252,14 @@ if st.session_state.page == "onboarding":
             if rp_sec_aman < 480:
                 rp_sec_aman = 480
         elif rp_sec <= 330 and frekuensi in ["< 1x", "1–2x"]:
-            pesan_peringatan += f"⚠️ **RISIKO OVERTRAINING:** Pace ambisius tapi frekuensi latihan minim. "
+            pesan_peringatan += "⚠️ **RISIKO OVERTRAINING:** Pace ambisius tapi frekuensi latihan minim. "
             resiko_ditemukan  = True
             opsi_aman = [k for k in level_tersedia if "Novice" in k]
             level_aman = opsi_aman[-1] if opsi_aman else level_tersedia[0]
             if rp_sec_aman < 420:
                 rp_sec_aman = 420
         elif rp_sec <= 270 and speedwork == "Tidak tahu":
-            pesan_peringatan += f"⚠️ **RISIKO TEKNIS:** Pace elite butuh adaptasi interval yang belum dimiliki. "
+            pesan_peringatan += "⚠️ **RISIKO TEKNIS:** Pace elite butuh adaptasi interval yang belum dimiliki. "
             resiko_ditemukan  = True
             opsi_aman = [k for k in level_tersedia if "Intermediate" in k]
             level_aman = opsi_aman[-1] if opsi_aman else level_tersedia[len(level_tersedia)//2]
@@ -1055,9 +1281,9 @@ if st.session_state.page == "onboarding":
             level_final = opsi[0] if opsi else level_tersedia[0]
 
         total_detik_baru = rp_sec * jarak_km
-        jam_finis    = int(total_detik_baru // 3600)
-        menit_finis  = int((total_detik_baru % 3600) // 60)
-        detik_finis  = int(total_detik_baru % 60)
+        jam_finis   = int(total_detik_baru // 3600)
+        menit_finis = int((total_detik_baru % 3600) // 60)
+        detik_finis = int(total_detik_baru % 60)
 
         user_data = {
             "nama": nama.strip(),
@@ -1077,7 +1303,6 @@ if st.session_state.page == "onboarding":
             "resiko_ditemukan": resiko_ditemukan,
             "level_aman": level_aman,
             "rp_sec_aman": rp_sec_aman,
-            "hari_terpilih": hari_terpilih,
         }
         try:
             simpan_data(user_data)
@@ -1095,9 +1320,8 @@ if st.session_state.page == "onboarding":
 elif st.session_state.page == "jadwal":
     data = st.session_state.user_data
 
-    nama_hari_race = NAMA_HARI_STANDAR[
-        datetime.datetime.strptime(data["tanggal_lomba"], "%Y-%m-%d").date().weekday()
-    ]
+    tanggal_lomba_obj = datetime.datetime.strptime(data["tanggal_lomba"], "%Y-%m-%d").date()
+    nama_hari_race    = NAMA_HARI_STANDAR[tanggal_lomba_obj.weekday()]
 
     st.markdown(f"""
     <h1>JADWAL LATIHAN</h1>
@@ -1105,8 +1329,7 @@ elif st.session_state.page == "jadwal":
     <div style="margin-bottom:24px;">
         <span class="stat-badge">📅 {data['durasi_str']}</span>
         <span class="stat-badge">🏁 Lomba {data['tanggal_lomba']} ({nama_hari_race})</span>
-        <span class="stat-badge">📌 Hari Latihan: {', '.join(data['hari_terpilih'])}</span>
-        <span class="stat-badge">🏃 Long Run = kolom {nama_hari_race}</span>
+        <span class="stat-badge">📌 Race Day = kolom kanan: {nama_hari_race}</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1126,166 +1349,30 @@ elif st.session_state.page == "jadwal":
         zona["Long_Aman"] = f"{format_waktu(rp_sec_target + 20)} - {format_waktu(rp_sec_target + 60)}"
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Easy (Santai)", zona["Easy"])
-        c2.metric("Long Run", zona["Long_Aman"])
-        c3.metric("Tempo", zona["Tempo"])
-        c4.metric("Interval", zona["Interval"])
+        c2.metric("Long Run",      zona["Long_Aman"])
+        c3.metric("Tempo",         zona["Tempo"])
+        c4.metric("Interval",      zona["Interval"])
         return zona
 
-    # ─────────────────────────────────────────
-    # GENERATOR TABEL JADWAL
-    # ─────────────────────────────────────────
-    def generate_full_table(target_level, target_rp_sec):
-        """
-        Menghasilkan tabel jadwal dengan kolom tetap 7 hari (Senin-Minggu).
-        Kolom hari race_day selalu berada di POSISI PALING KANAN dalam
-        tampilan tabel (diurutkan ulang).
-
-        Hari yang tidak dipilih user = Istirahat.
-        Long Run selalu ada di kolom hari race_day.
-        """
-        jarak        = data["jarak"]
-        sisa_waktu   = data["sisa_waktu"]
-        hari_user    = data["hari_terpilih"]  # hari yang dipilih user
-
-        tanggal_lomba = datetime.datetime.strptime(data["tanggal_lomba"], "%Y-%m-%d").date()
-        tanggal_mulai = datetime.datetime.strptime(data["tanggal_mulai"], "%Y-%m-%d").date()
-        nama_hari_race_day = NAMA_HARI_STANDAR[tanggal_lomba.weekday()]
-
-        # Urutan kolom: semua 7 hari, tapi race_day dipindah ke paling kanan
-        kolom_urut = [h for h in NAMA_HARI_STANDAR if h != nama_hari_race_day] + [nama_hari_race_day]
-
-        durasi_ideal  = hal_higdon_db[jarak][target_level]["durasi_minggu"]
-        jadwal_mentah = hal_higdon_db[jarak][target_level]["jadwal"]
-        jadwal_terpilih = {}
-
-        base_level_str = "Novice"
-        if "Intermediate" in target_level:
-            base_level_str = "Intermediate"
-        elif "Advance" in target_level or "Advanced" in target_level:
-            base_level_str = "Advanced"
-
-        # Pilih minggu-minggu yang dipakai
-        if sisa_waktu < durasi_ideal:
-            st.warning(
-                f"Sisa waktu **{sisa_waktu} minggu** (ideal {durasi_ideal} minggu). "
-                f"Jadwal dipotong cerdas dari fase inti."
-            )
-            minggu_mulai = durasi_ideal - sisa_waktu + 1
-            for i in range(minggu_mulai, durasi_ideal + 1):
-                key = str(i) if str(i) in jadwal_mentah else i
-                jadwal_terpilih[i] = jadwal_mentah[key]
-        elif sisa_waktu > durasi_ideal:
-            selisih = sisa_waktu - durasi_ideal
-            st.success(
-                f"Waktu persiapan panjang! Sistem menyisipkan **{selisih} minggu Base Training** "
-                f"sebelum program inti."
-            )
-            try:
-                jadwal_base = hal_higdon_db["Base_Training"][base_level_str]["jadwal"]
-            except KeyError:
-                jadwal_base = {"1": {
-                    "Senin": "Istirahat", "Selasa": "Lari 4.8 km", "Rabu": "Cross training",
-                    "Kamis": "Lari 4.8 km", "Jumat": "Istirahat", "Sabtu": "Lari 6.4 km",
-                    "Minggu": "Lari 9.7 km"
-                }}
-            for i in range(1, selisih + 1):
-                key_base = str(((i - 1) % 12) + 1)
-                jadwal_terpilih[i] = jadwal_base.get(key_base, list(jadwal_base.values())[0])
-            for i in range(1, durasi_ideal + 1):
-                key_inti = str(i) if str(i) in jadwal_mentah else i
-                jadwal_terpilih[selisih + i] = jadwal_mentah[key_inti]
-        else:
-            for i in range(1, durasi_ideal + 1):
-                key = str(i) if str(i) in jadwal_mentah else i
-                jadwal_terpilih[i] = jadwal_mentah[key]
-
-        list_minggu     = sorted(jadwal_terpilih.keys())
-        minggu_terakhir = list_minggu[-1] if list_minggu else 0
-        tabel_ui, tabel_pdf = [], []
-
-        for m, menu_db in jadwal_terpilih.items():
-            is_race_week = (m == minggu_terakhir)
-            is_taper     = (m == minggu_terakhir) or (
-                jarak == "Marathon" and m >= minggu_terakhir - 2
-            )
-
-            # Hitung tanggal
-            tgl_race_minggu = tanggal_lomba - datetime.timedelta(days=(minggu_terakhir - m) * 7)
-            # Awal minggu = 6 hari sebelum tanggal race di minggu ini
-            # (race day bisa hari apapun, bukan harus Minggu)
-            tgl_awal_minggu = tgl_race_minggu - datetime.timedelta(days=6)
-
-            label_ui  = f"M-{m}\n{tgl_awal_minggu.strftime('%d %b')} –\n{tgl_race_minggu.strftime('%d %b')}"
-            label_pdf = f"M-{m} | {tgl_awal_minggu.strftime('%d %b')} - {tgl_race_minggu.strftime('%d %b')}"
-            if is_taper:
-                label_ui  += "\n(Taper)"
-                label_pdf += " (Taper)"
-
-            # ── Petakan jadwal DB ke hari user ──
-            konten_per_hari = petakan_jadwal_ke_hari_user(
-                menu_db=menu_db,
-                hari_user=hari_user,
-                tanggal_race_day=tanggal_lomba,
-                tgl_awal_minggu=tgl_awal_minggu,
-                is_race_week=is_race_week,
-                jarak=jarak,
-            )
-
-            baris_ui  = {"Minggu Ke-": label_ui}
-            baris_pdf = {"Minggu Ke-": label_pdf}
-
-            # Bangun baris dengan urutan kolom yang benar (race_day di kanan)
-            for hari_kolom in kolom_urut:
-                # Hitung tanggal hari ini dalam minggu
-                idx_standar = NAMA_HARI_STANDAR.index(hari_kolom)
-                tgl_hari    = tgl_awal_minggu + datetime.timedelta(days=idx_standar)
-
-                if tgl_hari < tanggal_mulai:
-                    teks_ui  = "➖ Blm Mulai"
-                    teks_pdf = "- Blm Mulai"
-                elif tgl_hari > tanggal_lomba:
-                    teks_ui  = "🏁 Selesai"
-                    teks_pdf = "Selesai"
-                elif tgl_hari == tanggal_lomba:
-                    teks_ui  = f"🎯 RACE DAY!\n{jarak}"
-                    teks_pdf = f"RACE DAY! {jarak}"
-                else:
-                    menu = konten_per_hari.get(hari_kolom, "Istirahat")
-                    if is_istirahat_murni(menu):
-                        teks_ui  = f"🛌 {menu}"
-                        teks_pdf = menu
-                    elif any(x in menu.lower() for x in ["km", "tempo", "interval", "hill", "pace"]):
-                        teks_ui  = f"🏃 {menu}"
-                        teks_pdf = menu
-                    else:
-                        teks_ui  = menu
-                        teks_pdf = menu
-
-                baris_ui[hari_kolom]  = teks_ui
-                baris_pdf[hari_kolom] = teks_pdf
-
-            tabel_ui.append(baris_ui)
-            tabel_pdf.append(baris_pdf)
-
-        return tabel_ui, tabel_pdf
-
-    # ─── RENDER ───
+    # ─── RENDER TABEL ───
     if data.get("resiko_ditemukan"):
-        st.info("⚠️ **Mode Dual-Track:** 2 opsi jadwal untuk dipertimbangkan.")
+        st.info("⚠️ **Mode Dual-Track:** 2 opsi jadwal tersedia.")
 
         st.markdown("### 🛡️ Opsi 1 – Jadwal Rekomendasi Aman")
         st.success(f"Program: **{data['level_aman']}** | Race Pace: **{format_waktu(data['rp_sec_aman'])}/km**")
         zona_aman = render_metrik_zona(data["rp_sec_aman"])
-        tb_ui_aman, tb_pdf_aman = generate_full_table(data["level_aman"], data["rp_sec_aman"])
+        tb_ui_aman, tb_pdf_aman, header_ui_aman, _ = generate_full_table(data, data["level_aman"], data["rp_sec_aman"])
         st.table(tb_ui_aman)
 
         st.markdown("---")
         st.markdown("### 🎯 Opsi 2 – Jadwal Target Ambisius (Risiko Tinggi)")
         st.error(f"Program: **{data['level']}** | Race Pace: **{format_waktu(data['rp_sec'])}/km**")
         zona_ambisi = render_metrik_zona(data["rp_sec"])
-        tb_ui_ambisi, tb_pdf_ambisi = generate_full_table(data["level"], data["rp_sec"])
+        tb_ui_ambisi, tb_pdf_ambisi, header_ui_ambisi, _ = generate_full_table(data, data["level"], data["rp_sec"])
         st.table(tb_ui_ambisi)
-        tabel_rapi_pdf, zona_pdf = tb_pdf_ambisi, zona_ambisi
+        tabel_rapi_pdf = tb_pdf_ambisi
+        zona_pdf       = zona_ambisi
+        header_ui_pdf  = header_ui_ambisi
 
     else:
         st.markdown("### 🎯 Zona Pace & Intensitas Latihan")
@@ -1303,31 +1390,56 @@ elif st.session_state.page == "jadwal":
             )
 
         zona_normal = render_metrik_zona(data["rp_sec"])
-        tb_ui_normal, tb_pdf_normal = generate_full_table(data["level"], data["rp_sec"])
+        tb_ui_normal, tb_pdf_normal, header_ui_normal, _ = generate_full_table(data, data["level"], data["rp_sec"])
         st.table(tb_ui_normal)
-        tabel_rapi_pdf, zona_pdf = tb_pdf_normal, zona_normal
+        tabel_rapi_pdf = tb_pdf_normal
+        zona_pdf       = zona_normal
+        header_ui_pdf  = header_ui_normal
 
-    # ─── LEGEND HARD-EASY ───
+    # ─── LEGEND ───
     st.markdown("---")
     st.markdown(
-        "<p style='font-size:0.82rem;color:#94a3b8;'>"
-        "🏃 = Sesi Latihan &nbsp;·&nbsp; 🛌 = Istirahat/Recovery &nbsp;·&nbsp; "
-        "🎯 = Race Day &nbsp;·&nbsp; "
-        "<strong style='color:#fdba74;'>Pola Hard-Easy:</strong> "
-        "Sesi berat tidak pernah berurutan — setelah latihan keras selalu ada sesi ringan/istirahat. "
-        f"Kolom <strong style='color:#fdba74;'>{nama_hari_race}</strong> = Long Run setiap minggu."
-        "</p>",
+        f"<p style='font-size:0.82rem;color:#94a3b8;'>"
+        f"🏃 = Sesi Latihan &nbsp;·&nbsp; 🛌 = Istirahat/Recovery &nbsp;·&nbsp; "
+        f"🎯 = Race Day &nbsp;·&nbsp; "
+        f"<strong style='color:#fdba74;'>Kolom {nama_hari_race}</strong> = Long Run setiap minggu "
+        f"(jadwal Hal Higdon dirotasi sehingga hari race selalu di kanan).</p>",
         unsafe_allow_html=True
     )
 
     # ─── DOWNLOAD PDF ───
     st.markdown("---")
     try:
-        pdf_bytes = buat_pdf(data, tabel_rapi_pdf, zona_pdf, True)
+        if data.get("resiko_ditemukan"):
+            # Dual-track: kirim opsi aman (hal.1) + ambisius (hal.2) + edukasi (hal.3)
+            pdf_bytes = buat_pdf(
+                data,
+                jadwal_tabel    = tb_pdf_aman,
+                zona            = zona_aman,
+                header_ui       = header_ui_aman,
+                nama_hari_race  = nama_hari_race,
+                jadwal_tabel_2  = tb_pdf_ambisi,
+                zona_2          = zona_ambisi,
+                header_ui_2     = header_ui_ambisi,
+                level_aman_label   = f"OPSI AMAN: {data['level_aman']}",
+                level_ambisi_label = f"OPSI AMBISIUS: {data['level']}",
+            )
+            label_btn = "📥 Download PDF (3 Halaman: Aman + Ambisius + Edukasi)"
+        else:
+            # Normal: 1 jadwal + edukasi
+            pdf_bytes = buat_pdf(
+                data,
+                jadwal_tabel   = tabel_rapi_pdf,
+                zona           = zona_pdf,
+                header_ui      = header_ui_pdf,
+                nama_hari_race = nama_hari_race,
+            )
+            label_btn = "📥 Download Jadwal PDF (2 Halaman)"
+
         col_dl = st.columns([1, 2, 1])
         with col_dl[1]:
             st.download_button(
-                label="📥 Download Jadwal PDF",
+                label=label_btn,
                 data=pdf_bytes,
                 file_name=f"RunSmart_{data['nama'].replace(' ','_')}_{data['jarak']}.pdf",
                 mime="application/pdf",
@@ -1350,19 +1462,22 @@ elif st.session_state.page == "jadwal":
 **Tapering** adalah fase pengurangan beban latihan menjelang hari H lomba.
 - **Tujuan:** Mengisi ulang energi otot yang terkuras selama bulan latihan.
 - **Durasi:** Marathon = 3 minggu | Half Marathon/10K = 1–2 minggu.
+- **Tips:** Jangan panik saat tubuh terasa berat — itu normal!
             """)
         with tab2:
             st.markdown("""
 ### Long Run & Aturan Kecepatan
 **Long Run** adalah sesi terpenting per minggu — membangun stamina dan mental.
 - **Aturan Emas:** SELALU berlari **lebih lambat** dari target race pace.
-- Di RunSmart, Long Run selalu dijadwalkan di hari yang sama dengan Race Day.
+- Di RunSmart, Long Run selalu dijadwalkan di hari yang sama dengan Race Day (kolom kanan).
+- Naikkan jarak maksimal **10% per minggu** (10% Rule).
             """)
         with tab3:
             st.markdown("""
 ### Stepback / Recovery Week
 Jarak tidak selalu naik — ada minggu di mana jarak **turun**. Ini adalah **Stepback**.
 - **Pola umum:** Naik 3 minggu → turun 1 minggu → naik lagi.
+- Ini **bukan** kemunduran — ini bagian penting dari program!
             """)
         with tab4:
             st.markdown("""
@@ -1393,7 +1508,6 @@ Bukan sprint! Tempo = lari di **ambang batas anaerobik**.
 ### Prinsip Hard-Easy Days
 Salah satu pilar utama metodologi Hal Higdon:
 - **Setelah sesi berat** (Interval, Tempo, Long Run), WAJIB ada sesi ringan atau istirahat.
-- **Tidak boleh** 2 hari berat berturutan — otot perlu 24-48 jam untuk pulih.
-- RunSmart secara otomatis mengatur pola ini berdasarkan hari yang Anda pilih.
+- **Tidak boleh** 2 hari berat berurutan — otot perlu 24-48 jam untuk pulih.
 - **Contoh:** Selasa Interval → Rabu Easy 4.8km → Kamis Tempo → Jumat Istirahat.
             """)
